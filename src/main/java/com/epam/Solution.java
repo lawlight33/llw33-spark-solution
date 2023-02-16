@@ -10,19 +10,17 @@ import org.apache.spark.sql.SparkSession;
 import scala.Tuple2;
 
 import java.io.File;
-import java.io.Serializable;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.StreamSupport;
 
 /**
- * ---------------------------------
- * [ CURRENT ALGORITHM : group-by  ]
- * ---------------------------------
+ * IMPORTANT: MUST SPECIFY PARTITION_COUNT VARIABLE
+ * -----------------------------------------
+ * [ CURRENT ALGORITHM : sorted-partitions ]
+ * -----------------------------------------
  *
  * There are 3 possible algorithms:
  *
- *  1. GIT BRANCH NAME: group-by <---- current
+ *  1. GIT BRANCH NAME: group-by
  *    - make PairRDD by company
  *    - groupByKey(company)
  *    - sortBy(number).over(company)
@@ -38,7 +36,7 @@ import java.util.stream.StreamSupport;
  *    - enrich each collected lineage for each company with prev number & prev value. CompanyLineage::compile
  *    - sortBy(number).overAll
  *
- *  3. GIT BRANCH NAME: sorted-partitions
+ *  3. GIT BRANCH NAME: sorted-partitions <---- current
  *    - make PairRDD by company_number
  *    - repartitionAndSortWithinPartitions
  *         * put company data inside one partition (multiple companies inside partition is also ok)
@@ -49,7 +47,7 @@ import java.util.stream.StreamSupport;
  *    - sortByKey
  *
  * Each solution was tested on AWS EMR 6.7.0 cluster with S3 as datasource.
- * AWS EMR Spark cluster spec: 1x driver, 2x executors. VM spec: 4x core, 16xGB RAM.
+ * AWS EMR Spark cluster spec: 1x driver, 2x executors. VM spec: 4x core, 16 GB x RAM.
  * Used 20-million post-processed dataset from Kaggle: daily-historical-stock-prices-1970-2018.
  * Prepared 2 files, each file contains 10 million rows.
  *
@@ -69,48 +67,53 @@ import java.util.stream.StreamSupport;
 
 public class Solution {
 
+    // TODO must specify partitions count considering actual data distribution and Spark cluster parameters
+    // 16 partitions is the best value for:
+    //   - 2x files, 10 million rows each file
+    //   - 2x executors, 1x driver, each VM has 4x CPU, 10 GB x RAM
+    //   - "real" stock prices companies distribution: daily-historical-stock-prices-1970-2018
+    private static final int PARTITION_COUNT = 16;
+
     public void solve(SparkSession sparkSession, String inputDirectory, String outputDirectory) {
         JavaPairRDD<String, Row> javaPairRDD = sparkSession.read()
                 .csv(inputDirectory + "/*").javaRDD()
-                .keyBy(row -> row.getAs(COMPANY_POS));
+                .keyBy(r -> r.getAs(COMPANY_POS) + "_" + r.get(NUMBER_POS));
 
-        JavaPairRDD<Long, Row> processedRDD = javaPairRDD
-                .groupByKey()
-                .flatMapToPair(enrich)
-                .sortByKey();
+        JavaPairRDD<String, Row> rr = javaPairRDD.repartitionAndSortWithinPartitions(
+                new CompanyNamePartitioner(PARTITION_COUNT),
+                new CompanyNumberComparator());
 
-        processedRDD.map(new CsvTransformer())
+        rr.mapPartitionsToPair(flatMap, true)
+                .sortByKey()
+                .map(new CsvTransformer())
                 .saveAsTextFile(outputDirectory);
 
         // renameFiles(outputDirectory); TODO uncomment for pretty output filenames and .csv extensions
     }
 
-    private final PairFlatMapFunction<Tuple2<String, Iterable<Row>>, Long, Row> enrich = companyRecords -> {
-        String company = companyRecords._1();
-        AtomicLong prevValue = new AtomicLong(0L);
-        AtomicLong prevNumber = new AtomicLong(0L);
-        List<Tuple2<Long, Row>> tuples = new ArrayList<>();
-        StreamSupport.stream(companyRecords._2.spliterator(), false)
-                .sorted(Comparator.comparingLong(o -> Long.parseLong(o.getAs(NUMBER_POS))))
-                .forEach(record -> {
-                    Long number = Long.parseLong(record.getAs(NUMBER_POS));
-                    Long value = Long.parseLong(record.getAs(VALUE_POS));
-                    Row row = RowFactory.create(company, value, prevNumber.get(), prevValue.get());
-                    tuples.add(new Tuple2<>(number, row));
-                    if (value > 1000) {
-                        prevNumber.set(number);
-                        prevValue.set(value);
-                    }
-                });
-        return tuples.iterator();
+    private final PairFlatMapFunction<Iterator<Tuple2<String, Row>>, Long, Row> flatMap = rows -> {
+        List<Tuple2<Long, Row>> newRows = new ArrayList<>();
+        Map<String, Tuple2<Long, Long>> cache = new HashMap<>();
+        while (rows.hasNext()) {
+            Tuple2<String, Row> tuple = rows.next();
+            String company = tuple._2.getAs(COMPANY_POS);
+            long number = Long.parseLong(tuple._2.getAs(NUMBER_POS));
+            long value = Long.parseLong(tuple._2.getAs(VALUE_POS));
+            Tuple2<Long, Long> previous = cache.getOrDefault(company, new Tuple2<>(0L, 0L));
+            Row newRow = RowFactory.create(number, company, value, previous._1, previous._2);
+            if (value > 1000) {
+                cache.put(company, new Tuple2<>(number, value));
+            }
+            newRows.add(new Tuple2<>(number, newRow));
+        }
+        return newRows.iterator();
     };
 
-    private static class CsvTransformer implements Serializable, Function<Tuple2<Long, Row>, String> {
+    private static class CsvTransformer implements Function<Tuple2<Long, Row>, String> {
         @Override
         public String call(Tuple2<Long, Row> v1) {
             String row = v1._2.toString();
-            row = row.substring(1, row.length() - 1);
-            return v1._1 + "," + row;
+            return row.substring(1, row.length() - 1);
         }
     }
 
