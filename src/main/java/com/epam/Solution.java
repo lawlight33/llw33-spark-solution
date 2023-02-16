@@ -3,6 +3,7 @@ package com.epam;
 import com.google.common.base.Preconditions;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.PairFlatMapFunction;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.SparkSession;
@@ -11,22 +12,24 @@ import scala.Tuple2;
 import java.io.File;
 import java.io.Serializable;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.StreamSupport;
 
 /**
  * ---------------------------------
- * [ CURRENT ALGORITHM : aggregate ]
+ * [ CURRENT ALGORITHM : group-by  ]
  * ---------------------------------
  *
  * There are 3 possible algorithms:
  *
- *  1. GIT BRANCH NAME: group-by
+ *  1. GIT BRANCH NAME: group-by <---- current
  *    - make PairRDD by company
  *    - groupByKey(company)
  *    - sortBy(number).over(company)
  *    - iterate over each company row, enrich with prev number & value
  *    - sortBy(number).overAll
  *
- *  2. GIT BRANCH NAME: aggregate <---- current
+ *  2. GIT BRANCH NAME: aggregate
  *    - make PairRDD by company
  *    - aggregateByKey.
  *         * collect lineage for each company within each partition. CompanyLineage::addRecord
@@ -71,74 +74,43 @@ public class Solution {
                 .csv(inputDirectory + "/*").javaRDD()
                 .keyBy(row -> row.getAs(COMPANY_POS));
 
-        JavaPairRDD<String, CompanyLineage> accumulators = javaPairRDD.aggregateByKey(
-                new CompanyLineage(),
-                CompanyLineage::addRecord,
-                CompanyLineage::merge);
+        JavaPairRDD<Long, Row> processedRDD = javaPairRDD
+                .groupByKey()
+                .flatMapToPair(enrich)
+                .sortByKey();
 
-        accumulators.flatMapToPair(entry -> entry._2.compile())
-                .sortByKey()
-                .map(new CsvTransformer())
+        processedRDD.map(new CsvTransformer())
                 .saveAsTextFile(outputDirectory);
 
         // renameFiles(outputDirectory); TODO uncomment for pretty output filenames and .csv extensions
     }
 
-    private static class CompanyLineage implements Serializable {
-        TreeMap<Long, RowWrapper> cache = new TreeMap<>();
+    private final PairFlatMapFunction<Tuple2<String, Iterable<Row>>, Long, Row> enrich = companyRecords -> {
+        String company = companyRecords._1();
+        AtomicLong prevValue = new AtomicLong(0L);
+        AtomicLong prevNumber = new AtomicLong(0L);
+        List<Tuple2<Long, Row>> tuples = new ArrayList<>();
+        StreamSupport.stream(companyRecords._2.spliterator(), false)
+                .sorted(Comparator.comparingLong(o -> Long.parseLong(o.getAs(NUMBER_POS))))
+                .forEach(record -> {
+                    Long number = Long.parseLong(record.getAs(NUMBER_POS));
+                    Long value = Long.parseLong(record.getAs(VALUE_POS));
+                    Row row = RowFactory.create(company, value, prevNumber.get(), prevValue.get());
+                    tuples.add(new Tuple2<>(number, row));
+                    if (value > 1000) {
+                        prevNumber.set(number);
+                        prevValue.set(value);
+                    }
+                });
+        return tuples.iterator();
+    };
 
-        public CompanyLineage addRecord(Row row) {
-            long number = Long.parseLong(row.getAs(NUMBER_POS));
-            this.cache.put(number, new RowWrapper(row));
-            return this;
-        }
-
-        public CompanyLineage merge(CompanyLineage companyLineage) {
-            this.cache.putAll(companyLineage.cache);
-            return this;
-        }
-
-        public Iterator<Tuple2<Long, RowWrapper>> compile() {
-            enrichWithPrevious();
-            return makePairs();
-        }
-
-        private void enrichWithPrevious() {
-            long prevNumber = 0L;
-            long prevValue = 0L;
-            for (Map.Entry<Long, RowWrapper> e : cache.entrySet()) {
-                String curNumberStr = e.getValue().getAs(NUMBER_POS);
-                String company = e.getValue().getAs(COMPANY_POS);
-                String curValueStr = e.getValue().getAs(VALUE_POS);
-                long curNumber = Long.parseLong(curNumberStr);
-                long curValue = Long.parseLong(curValueStr);
-                String prevNumberStr = String.valueOf(prevNumber);
-                String prevValueStr = String.valueOf(prevValue);
-                Row newRow = RowFactory.create(curNumberStr, company, curValueStr, prevNumberStr, prevValueStr);
-                e.getValue().modifyRow(newRow);
-                if (curValue > 1000) {
-                    prevValue = curValue;
-                    prevNumber = curNumber;
-                }
-            }
-        }
-
-        private Iterator<Tuple2<Long, RowWrapper>> makePairs() {
-            return cache.entrySet().stream()
-                    .map(e -> new Tuple2<>(e.getKey(), e.getValue()))
-                    .iterator();
-        }
-
+    private static class CsvTransformer implements Serializable, Function<Tuple2<Long, Row>, String> {
         @Override
-        public String toString() {
-            return cache.toString();
-        }
-    }
-
-    private static class CsvTransformer implements Serializable, Function<Tuple2<Long, RowWrapper>, String> {
-        @Override
-        public String call(Tuple2<Long, RowWrapper> v1) {
-            return v1._2.toString();
+        public String call(Tuple2<Long, Row> v1) {
+            String row = v1._2.toString();
+            row = row.substring(1, row.length() - 1);
+            return v1._1 + "," + row;
         }
     }
 
