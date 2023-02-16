@@ -32,6 +32,6 @@ public class CompanyNamePartitioner extends Partitioner implements Serializable 
             company = key.toString().substring(0, key.toString().lastIndexOf("_"));
         }
         // data for particular company must congregates into same partition
-        return company.hashCode() % partitionCount;
+        return Math.abs(company.hashCode()) % partitionCount;
     }
 }

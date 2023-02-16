@@ -58,6 +58,11 @@ import java.util.*;
  * ------------------------------------------------
  *
  * All results passed cross-equals check: result1DF.exceptAll(result2DF).count() == 0   <---- true for each result pair
+ * Also there are 4 unit tests:
+ *    1. SolutionTest::demoTestInput() for given input (1,APPLE,2000, 2,GOOGLE,10, 3,MICROSOFT,5000 ...)
+ *    2. SolutionTest::enrichPartitionTest() for enrich partition map function
+ *    3. CompanyNamePartitionerTest::partitionTest() for company Partitioner class
+ *    4. CompanyNumberComparatorTest::compareTest() for company Comparator class
  *
  * How to run:
  * 1. Choose wanted algorithm by checkout appropriate git branch.
@@ -67,11 +72,11 @@ import java.util.*;
 
 public class Solution {
 
-    // TODO must specify partitions count considering actual data distribution and Spark cluster parameters
+    // TODO must specify partitions count considering actual data distribution (data skew) and Spark cluster parameters
     // 16 partitions is the best value for:
     //   - 2x files, 10 million rows each file
     //   - 2x executors, 1x driver, each VM has 4x CPU, 10 GB x RAM
-    //   - "real" stock prices companies distribution: daily-historical-stock-prices-1970-2018
+    //   - "real" stock prices companies data skew: Kaggle's daily-historical-stock-prices-1970-2018 dataset
     private static final int PARTITION_COUNT = 16;
 
     public void solve(SparkSession sparkSession, String inputDirectory, String outputDirectory) {
@@ -91,7 +96,7 @@ public class Solution {
         // renameFiles(outputDirectory); TODO uncomment for pretty output filenames and .csv extensions
     }
 
-    private final PairFlatMapFunction<Iterator<Tuple2<String, Row>>, Long, Row> flatMap = rows -> {
+    final PairFlatMapFunction<Iterator<Tuple2<String, Row>>, Long, Row> flatMap = rows -> {
         List<Tuple2<Long, Row>> newRows = new ArrayList<>();
         Map<String, Tuple2<Long, Long>> cache = new HashMap<>();
         while (rows.hasNext()) {
