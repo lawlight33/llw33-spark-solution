@@ -57,6 +57,9 @@ import java.util.*;
  * ------------------------------------------------
  *
  * All results passed cross-equals check: result1DF.exceptAll(result2DF).count() == 0   <---- true for each result pair
+ * Also there are 2 unit tests:
+ *    1. SolutionTest::demoTestInput() for given input (1,APPLE,2000, 2,GOOGLE,10, 3,MICROSOFT,5000 ...)
+ *    2. SolutionTest::companyLineageTest() for company linage class (CompanyLineage)
  *
  * How to run:
  * 1. Choose wanted algorithm by checkout appropriate git branch.
@@ -84,7 +87,7 @@ public class Solution {
         // renameFiles(outputDirectory); TODO uncomment for pretty output filenames and .csv extensions
     }
 
-    private static class CompanyLineage implements Serializable {
+    static class CompanyLineage implements Serializable {
         TreeMap<Long, RowWrapper> cache = new TreeMap<>();
 
         public CompanyLineage addRecord(Row row) {
