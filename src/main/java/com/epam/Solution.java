@@ -60,6 +60,9 @@ import java.util.stream.StreamSupport;
  * ------------------------------------------------
  *
  * All results passed cross-equals check: result1DF.exceptAll(result2DF).count() == 0   <---- true for each result pair
+ * Also there are 2 unit tests:
+ *    1. SolutionTest::demoTestInput() for given input (1,APPLE,2000, 2,GOOGLE,10, 3,MICROSOFT,5000 ...)
+ *    2. SolutionTest::enrichTest() for enrich function
  *
  * How to run:
  * 1. Choose wanted algorithm by checkout appropriate git branch.
@@ -85,7 +88,7 @@ public class Solution {
         // renameFiles(outputDirectory); TODO uncomment for pretty output filenames and .csv extensions
     }
 
-    private final PairFlatMapFunction<Tuple2<String, Iterable<Row>>, Long, Row> enrich = companyRecords -> {
+    final PairFlatMapFunction<Tuple2<String, Iterable<Row>>, Long, Row> enrich = companyRecords -> {
         String company = companyRecords._1();
         AtomicLong prevValue = new AtomicLong(0L);
         AtomicLong prevNumber = new AtomicLong(0L);
